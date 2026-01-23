@@ -10,6 +10,7 @@ import time
 import json
 import requests
 import ipaddress
+import re
 
 try:
     import nmap3
@@ -57,6 +58,8 @@ def validate_api_keys():
         missing_keys.append("ANTHROPIC_API_KEY")
     if not REPLIT_API_KEY:
         missing_keys.append("REPLIT_API_KEY")
+    if not GEMINI_API_KEY:
+        missing_keys.append("GEMINI_API_KEY")
 
     if missing_keys:
         logging.warning(f"Missing API keys: {', '.join(missing_keys)}. Some functionality may be unavailable.")
@@ -232,6 +235,37 @@ def ask_openai(prompt):
         logging.error(f"OpenAI API error: {e}")
         return "<b>OpenAI API error. No vulnerability analysis available.</b>"
 
+def ask_gemini(prompt):
+    if not GEMINI_API_KEY:
+        logging.error("Gemini API key not set.")
+        return "<b>No Gemini API key configured.</b>"
+
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+    headers = {
+        "Content-Type": "application/json"
+    }
+    params = {
+        "key": GEMINI_API_KEY
+    }
+    data = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": "You are a cybersecurity expert.\n" + prompt}
+                ]
+            }
+        ]
+    }
+
+    try:
+        response = requests.post(url, headers=headers, params=params, json=data, timeout=60)
+        response.raise_for_status()
+        result = response.json()
+        return result["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        logging.error(f"Gemini API error: {e}")
+        return "<b>Gemini API error. No vulnerability analysis available.</b>"
+
 def ask_anthropic(prompt):
     # Claude 3 API (Anthropic)
     if not ANTHROPIC_API_KEY:
@@ -319,6 +353,8 @@ Return the results as a well-formatted HTML snippet with line breaks (<br>) sepa
         available_providers.append("Anthropic")
     if REPLIT_API_KEY:
         available_providers.append("Replit")
+    if GEMINI_API_KEY:
+    available_providers.append("Gemini")
 
     if not provider:
         if len(available_providers) == 0:
@@ -366,6 +402,8 @@ Return the results as a well-formatted HTML snippet with line breaks (<br>) sepa
         return ask_anthropic(prompt)
     elif provider == "Replit":
         return ask_replit(prompt)
+    elif provider == "Gemini":
+    return ask_gemini(prompt)
     else:
         return "<b>No valid AI provider selected.</b>"
 
