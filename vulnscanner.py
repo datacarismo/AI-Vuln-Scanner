@@ -22,6 +22,7 @@ except ImportError as e:
     sys.exit(1)
 
 load_dotenv()
+nm = nmap3.NmapScanTechniques()
 
 # Logging setup (default to INFO, set to DEBUG in main if needed)
 logging.basicConfig(
@@ -112,45 +113,31 @@ def is_safe_target(target):
 def run_nmap_scan(target, arguments):
     try:
         logging.debug("=" * 60)
-        logging.debug(f"Executing nmap3.scan_command()")
+        logging.debug("Executing nmap3 version detection scan")
         logging.debug(f"Target   : {target}")
         logging.debug(f"Arguments: {arguments}")
         logging.debug("=" * 60)
 
-        result = nm.scan_command(target, arguments)
+        # This returns a proper Python dictionary (JSON-compatible)
+        result = nm.nmap_version_detection(target, args=arguments)
 
-        # Raw visibility
-        logging.debug("Type of result: %s", type(result))
+        logging.debug(f"Type of result: {type(result)}")
         logging.debug("Full raw result:")
         logging.debug(json.dumps(result, indent=2))
 
-        if not result:
-            logging.error("Nmap returned an empty object.")
-            return {}
-
         if not isinstance(result, dict):
-            logging.error(f"Nmap returned non-dict result: {type(result)}")
+            logging.error("Nmap did not return a dictionary structure.")
             return {}
 
-        # Some nmap3 versions use "scan", some use direct IP keys
-        if "scan" in result:
-            scan_data = result["scan"]
-            logging.debug("Found 'scan' key in result.")
-        else:
-            logging.warning("No 'scan' key found. Using result directly.")
-            scan_data = result
-
-        if not scan_data:
-            logging.error("Scan data section is empty.")
+        if not result:
+            logging.error("Nmap returned an empty result.")
             return {}
 
-        logging.debug(f"Available scan keys: {list(scan_data.keys())}")
-
-        # Always take first scanned host (works for IP and hostname targets)
-        scanned_host = next(iter(scan_data.keys()))
+        # nmap3 already returns per-host dictionaries here
+        scanned_host = next(iter(result.keys()))
         logging.debug(f"Using scanned host: {scanned_host}")
 
-        host_data = scan_data[scanned_host]
+        host_data = result[scanned_host]
 
         if not isinstance(host_data, dict):
             logging.error("Host data is not a dictionary.")
