@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Author: cbk914 (refactored by Perplexity AI)
+# Author: cbk914 (refactored and hardened)
 
 import os
 import sys
@@ -21,10 +21,18 @@ except ImportError as e:
     print(f"Missing dependency: {e.name}. Please install it with pip.")
     sys.exit(1)
 
+# =========================
+# Environment
+# =========================
 load_dotenv()
+
+# IMPORTANT:
+# Use ONLY NmapScanTechniques. Do NOT overwrite this later.
 nm = nmap3.NmapScanTechniques()
 
-# Logging setup (default to INFO, set to DEBUG in main if needed)
+# =========================
+# Logging base config
+# =========================
 logging.basicConfig(
     level=logging.INFO,
     format='[%(levelname)s] %(message)s'
@@ -33,21 +41,15 @@ logging.basicConfig(
 # =========================
 # AI Provider Configs
 # =========================
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-ANYTHINGLLM_API_KEY = os.getenv('ANYTHINGLLM_API_KEY')
-ANYTHINGLLM_API_URL = os.getenv('ANYTHINGLLM_API_URL')
-ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
-REPLIT_API_KEY = os.getenv('REPLIT_API_KEY')
-REPLIT_API_URL = os.getenv('REPLIT_API_URL', 'https://chat.replit.com/v1/chat/completions')
-
-# FIX 1: Gemini key was missing
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 MODEL_ENGINE = "gpt-4o"
 TEMPERATURE = 0.5
 TOKEN_LIMIT = 4096
 
-nm = nmap3.Nmap()
+# Shared HTTP session (performance + reliability)
+HTTP_SESSION = requests.Session()
 
 
 # =========================
@@ -60,25 +62,18 @@ def mask_api_key(key):
 
 
 def validate_api_keys():
-    missing_keys = []
+    missing = []
     if not OPENAI_API_KEY:
-        missing_keys.append("OPENAI_API_KEY")
-    if not ANYTHINGLLM_API_KEY:
-        missing_keys.append("ANYTHINGLLM_API_KEY")
-    if not ANTHROPIC_API_KEY:
-        missing_keys.append("ANTHROPIC_API_KEY")
-    if not REPLIT_API_KEY:
-        missing_keys.append("REPLIT_API_KEY")
+        missing.append("OPENAI_API_KEY")
     if not GEMINI_API_KEY:
-        missing_keys.append("GEMINI_API_KEY")
+        missing.append("GEMINI_API_KEY")
 
-    if missing_keys:
-        logging.warning(f"Missing API keys: {', '.join(missing_keys)}. Some functionality may be unavailable.")
+    if missing:
+        logging.warning(
+            f"Missing API keys: {', '.join(missing)}. Some functionality may be unavailable."
+        )
 
     logging.debug(f"OpenAI API Key: {mask_api_key(OPENAI_API_KEY)}")
-    logging.debug(f"AnythingLLM API Key: {mask_api_key(ANYTHINGLLM_API_KEY)}")
-    logging.debug(f"Anthropic API Key: {mask_api_key(ANTHROPIC_API_KEY)}")
-    logging.debug(f"Replit API Key: {mask_api_key(REPLIT_API_KEY)}")
     logging.debug(f"Gemini API Key: {mask_api_key(GEMINI_API_KEY)}")
 
 
@@ -90,19 +85,24 @@ def print_ethical_warning():
 
 
 def sanitize_target(target):
-    target = re.sub(r'^https?://', '', target, flags=re.IGNORECASE)
-    return target.strip('/')
+    # Remove protocol
+    target = re.sub(r"^https?://", "", target, flags=re.IGNORECASE)
+    # Remove trailing slash
+    target = target.strip("/")
+    # Remove port if present
+    target = re.sub(r":\d+$", "", target)
+    return target
 
 
 def is_safe_target(target):
-    if re.search(r'[;&|`$<>]', target):
+    if re.search(r"[;&|`$<>]", target):
         return False
     try:
         ipaddress.ip_address(target)
         return True
     except ValueError:
         pass
-    if re.match(r'^[a-zA-Z0-9.-]+$', target):
+    if re.match(r"^[a-zA-Z0-9.-]+$", target):
         return True
     return False
 
@@ -118,7 +118,7 @@ def run_nmap_scan(target, arguments):
         logging.debug(f"Arguments: {arguments}")
         logging.debug("=" * 60)
 
-        # This returns a proper Python dictionary (JSON-compatible)
+        # nmap_version_detection always returns a Python dict
         result = nm.nmap_version_detection(target, args=arguments)
 
         logging.debug(f"Type of result: {type(result)}")
@@ -133,7 +133,7 @@ def run_nmap_scan(target, arguments):
             logging.error("Nmap returned an empty result.")
             return {}
 
-        # nmap3 already returns per-host dictionaries here
+        # Always use first discovered host (works for IP and hostname)
         scanned_host = next(iter(result.keys()))
         logging.debug(f"Using scanned host: {scanned_host}")
 
@@ -149,21 +149,22 @@ def run_nmap_scan(target, arguments):
 
         return {scanned_host: host_data}
 
-    except Exception as e:
+    except Exception:
         logging.exception("Nmap scan crashed with exception:")
         return {}
+
 
 def extract_open_ports(analyze):
     open_ports_info = []
     for host, host_data in analyze.items():
         ports = host_data.get("ports", [])
         for port_entry in ports:
-            if port_entry.get('state') == 'open':
-                portid = port_entry.get('portid')
-                service = port_entry.get('service', {}).get('name', 'unknown')
-                protocol = port_entry.get('protocol', 'tcp')
+            if port_entry.get("state") == "open":
+                portid = port_entry.get("portid")
+                service = port_entry.get("service", {}).get("name", "unknown")
+                protocol = port_entry.get("protocol", "tcp")
                 open_ports_info.append(f"{protocol.upper()} Port {portid}: {service}")
-    return ', '.join(open_ports_info)
+    return ", ".join(open_ports_info)
 
 
 def print_scan_results(analyze):
@@ -172,10 +173,10 @@ def print_scan_results(analyze):
         if "ports" in host_data:
             logging.info("Ports:")
             for port_entry in host_data["ports"]:
-                portid = port_entry.get('portid')
-                protocol = port_entry.get('protocol', 'tcp')
-                state = port_entry.get('state')
-                service = port_entry.get('service', {}).get('name', 'unknown')
+                portid = port_entry.get("portid")
+                protocol = port_entry.get("protocol", "tcp")
+                state = port_entry.get("state")
+                service = port_entry.get("service", {}).get("name", "unknown")
                 logging.info(f"  {protocol.upper()} Port {portid}: {service} ({state})")
         print()
 
@@ -191,7 +192,7 @@ def ask_openai(prompt):
             model=MODEL_ENGINE,
             messages=[
                 {"role": "system", "content": "You are a cybersecurity expert."},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt},
             ],
             max_tokens=TOKEN_LIMIT,
             temperature=TEMPERATURE,
@@ -222,7 +223,9 @@ def ask_gemini(prompt):
     }
 
     try:
-        response = requests.post(url, headers=headers, params=params, json=data, timeout=60)
+        response = HTTP_SESSION.post(
+            url, headers=headers, params=params, json=data, timeout=60
+        )
         response.raise_for_status()
         result = response.json()
         return result["candidates"][0]["content"]["parts"][0]["text"]
@@ -277,27 +280,22 @@ Return HTML.
 # =========================
 # Export helpers
 # =========================
-def is_valid_json(json_string):
-    try:
-        data = json.loads(json_string)
-        return isinstance(data, dict) or (isinstance(data, list) and len(data) > 0)
-    except json.JSONDecodeError:
-        return False
-
-
 def export_to_html(html_snippet, filename):
     template = Template("""
 <!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><title>Vulnerability Report</title></head>
+<head>
+<meta charset="utf-8">
+<title>Vulnerability Report</title>
+</head>
 <body>
 <h1>Vulnerability Report</h1>
-{{ html_snippet }}
+{{ html_snippet | safe }}
 </body>
 </html>
 """)
     html_content = template.render(html_snippet=html_snippet)
-    with open(filename, "w", encoding='utf-8') as f:
+    with open(filename, "w", encoding="utf-8") as f:
         f.write(html_content)
 
 
@@ -309,21 +307,55 @@ def main():
     validate_api_keys()
 
     parser = argparse.ArgumentParser(
-        description='Python-Nmap3 and Multi-AI (OpenAI, Gemini) Vulnerability Scanner'
+        description="Python-Nmap3 and Multi-AI (OpenAI, Gemini) Vulnerability Scanner"
     )
-    parser.add_argument('-t', '--target', required=True)
-    parser.add_argument('-d', '--debug', action='store_true')
+    parser.add_argument("-t", "--target", required=True, help="Target IP or hostname")
+    parser.add_argument("-d", "--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "-dl",
+        "--debug-log",
+        metavar="file",
+        help="Write debug output to the specified file",
+    )
+
     args = parser.parse_args()
 
-    if args.debug:
+    if args.debug or args.debug_log:
         logging.getLogger().setLevel(logging.DEBUG)
+
+        formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s")
+        root_logger = logging.getLogger()
+
+        # Console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.DEBUG)
+        console_handler.setFormatter(formatter)
+
+        if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
+            root_logger.addHandler(console_handler)
+
+        # File handler
+        if args.debug_log:
+            file_handler = logging.FileHandler(args.debug_log, encoding="utf-8")
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(formatter)
+
+            if not any(
+                isinstance(h, logging.FileHandler) and h.baseFilename == file_handler.baseFilename
+                for h in root_logger.handlers
+            ):
+                root_logger.addHandler(file_handler)
+
+            logging.debug(f"Debug log file enabled: {args.debug_log}")
 
     target = sanitize_target(args.target)
     if not is_safe_target(target):
         logging.error("Invalid target.")
         sys.exit(1)
 
-    analyze = run_nmap_scan(target, "-Pn -sV -T4 -F -vvv")
+    # Host timeout avoids infinite scans
+    nmap_args = "-Pn -T4 -F --host-timeout 5m -vvv"
+    analyze = run_nmap_scan(target, nmap_args)
     if not analyze:
         logging.error("No scan results.")
         return
@@ -332,8 +364,13 @@ def main():
     open_ports = extract_open_ports(analyze)
 
     vuln_html = ask_ai_vuln_analysis(analyze, open_ports, "", "")
-    export_to_html(vuln_html, f"{target}-{int(time.time())}.html")
-    print("Scan complete.")
+    if not vuln_html or len(vuln_html.strip()) < 20:
+        logging.error("AI returned empty or invalid response.")
+        return
+
+    output_file = f"{target}-{int(time.time())}.html"
+    export_to_html(vuln_html, output_file)
+    print(f"Scan complete. Report written to {output_file}")
 
 
 if __name__ == "__main__":
