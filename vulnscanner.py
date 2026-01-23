@@ -113,27 +113,32 @@ def is_safe_target(target):
 def run_nmap_scan(target, arguments):
     try:
         logging.debug("=" * 60)
-        logging.debug("Executing nmap3 version detection scan")
+        logging.debug("Executing nmap scan (raw scan_command)")
         logging.debug(f"Target   : {target}")
         logging.debug(f"Arguments: {arguments}")
         logging.debug("=" * 60)
 
-        # nmap_version_detection always returns a Python dict
-        result = nm.nmap_version_detection(target, args=arguments)
+        # This returns XML ElementTree
+        xml_result = nm.scan_command(target, arguments)
 
-        logging.debug(f"Type of result: {type(result)}")
-        logging.debug("Full raw result:")
+        logging.debug(f"Type of raw result: {type(xml_result)}")
+
+        # Convert XML → Python dict using nmap3 parser
+        from nmap3 import NmapParser
+        parser = NmapParser()
+        result = parser.parse(xml_result)
+
+        logging.debug("Parsed Nmap result (dict):")
         logging.debug(json.dumps(result, indent=2))
 
         if not isinstance(result, dict):
-            logging.error("Nmap did not return a dictionary structure.")
+            logging.error("Parsed Nmap result is not a dictionary.")
             return {}
 
         if not result:
-            logging.error("Nmap returned an empty result.")
+            logging.error("Parsed Nmap result is empty.")
             return {}
 
-        # Always use first discovered host (works for IP and hostname)
         scanned_host = next(iter(result.keys()))
         logging.debug(f"Using scanned host: {scanned_host}")
 
@@ -152,7 +157,6 @@ def run_nmap_scan(target, arguments):
     except Exception:
         logging.exception("Nmap scan crashed with exception:")
         return {}
-
 
 def extract_open_ports(analyze):
     open_ports_info = []
@@ -312,10 +316,11 @@ def main():
     parser.add_argument("-t", "--target", required=True, help="Target IP or hostname")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug logging")
     parser.add_argument(
-        "-dl",
-        "--debug-log",
-        metavar="file",
-        help="Write debug output to the specified file",
+        '-dl', '--debug-log',
+        nargs='?',
+        const='vulnscanner-debug.log',
+        metavar='file',
+        help='Write debug output to file (default: vulnscanner-debug.log)'
     )
 
     args = parser.parse_args()
