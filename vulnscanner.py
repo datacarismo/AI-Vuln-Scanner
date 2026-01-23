@@ -119,7 +119,7 @@ def run_nmap_scan(target, arguments):
         logging.debug("=" * 60)
 
         # This returns XML ElementTree
-        xml_result = nm.scan_command(target, arguments)
+        xml_result = nm.scan_command(target=target, args=arguments)
 
         logging.debug(f"Type of raw result: {type(xml_result)}")
 
