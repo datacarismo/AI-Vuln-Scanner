@@ -111,28 +111,59 @@ def is_safe_target(target):
 # =========================
 def run_nmap_scan(target, arguments):
     try:
-        logging.debug(f"Executing nmap with target={target} arguments='{arguments}'")
+        logging.debug("=" * 60)
+        logging.debug(f"Executing nmap3.scan_command()")
+        logging.debug(f"Target   : {target}")
+        logging.debug(f"Arguments: {arguments}")
+        logging.debug("=" * 60)
+
         result = nm.scan_command(target, arguments)
 
+        # Raw visibility
+        logging.debug("Type of result: %s", type(result))
+        logging.debug("Full raw result:")
+        logging.debug(json.dumps(result, indent=2))
+
+        if not result:
+            logging.error("Nmap returned an empty object.")
+            return {}
+
         if not isinstance(result, dict):
-            logging.error("Nmap returned an invalid response format.")
+            logging.error(f"Nmap returned non-dict result: {type(result)}")
             return {}
 
-        logging.debug(f"Raw Nmap output: {json.dumps(result, indent=2)}")
+        # Some nmap3 versions use "scan", some use direct IP keys
+        if "scan" in result:
+            scan_data = result["scan"]
+            logging.debug("Found 'scan' key in result.")
+        else:
+            logging.warning("No 'scan' key found. Using result directly.")
+            scan_data = result
 
-        scan_data = result.get("scan")
         if not scan_data:
-            logging.error("Nmap completed but returned an empty scan section.")
+            logging.error("Scan data section is empty.")
             return {}
 
-        # Take the first discovered host (works for IPs and hostnames)
-        scanned_host = next(iter(scan_data.keys()))
-        logging.debug(f"Resolved target '{target}' to scanned host '{scanned_host}'")
+        logging.debug(f"Available scan keys: {list(scan_data.keys())}")
 
-        return {scanned_host: scan_data[scanned_host]}
+        # Always take first scanned host (works for IP and hostname targets)
+        scanned_host = next(iter(scan_data.keys()))
+        logging.debug(f"Using scanned host: {scanned_host}")
+
+        host_data = scan_data[scanned_host]
+
+        if not isinstance(host_data, dict):
+            logging.error("Host data is not a dictionary.")
+            logging.debug(f"Host data: {host_data}")
+            return {}
+
+        logging.debug("Host data successfully parsed.")
+        logging.debug(json.dumps(host_data, indent=2))
+
+        return {scanned_host: host_data}
 
     except Exception as e:
-        logging.error(f"Nmap scan failed: {e}")
+        logging.exception("Nmap scan crashed with exception:")
         return {}
 
 def extract_open_ports(analyze):
