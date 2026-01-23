@@ -122,12 +122,30 @@ def is_safe_target(target):
 
 def run_nmap_scan(ip, arguments):
     try:
+        logging.debug(f"Executing nmap with target={ip} arguments='{arguments}'")
         result = nm.scan_command(ip, arguments)
-        if not result or ip not in result:
-            logging.error("Nmap scan returned no results.")
+
+        if not isinstance(result, dict):
+            logging.error("Nmap returned an invalid response format.")
             return {}
-        analyze = {ip: result[ip]}
+
+        logging.debug(f"Raw Nmap output: {json.dumps(result, indent=2)}")
+
+        # nmap3 stores hosts under the "scan" key
+        scan_data = result.get("scan")
+
+        if not scan_data:
+            logging.error("Nmap completed but returned an empty scan section.")
+            return {}
+
+        if ip not in scan_data:
+            logging.error(f"Target {ip} not found in Nmap scan results.")
+            logging.debug(f"Available hosts: {list(scan_data.keys())}")
+            return {}
+
+        analyze = {ip: scan_data[ip]}
         return analyze
+
     except Exception as e:
         logging.error(f"Nmap scan failed: {e}")
         return {}
