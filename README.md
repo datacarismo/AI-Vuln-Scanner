@@ -6,14 +6,14 @@
 
 ## Key Features
 
-- **Multiple AI Providers:** Supports OpenAI (GPT-4o), Anthropic Claude, Replit AI, and AnythingLLM. User can select provider and model at runtime.
-- **Asset Context & Threat Intelligence:** User can provide or auto-deduce asset type and threat intelligence for more relevant analysis.
-- **Scan Profiles:** Eight built-in scan profiles (e.g., Fast, Full, WAF bypass, Vulnerability scan).
-- **Rich Output:** Exports to HTML, CSV, XML, TXT, or JSON.
+- **Multiple AI Providers:** Supports OpenAI (GPT-4o), Gemini, Anthropic Claude, Replit AI, and AnythingLLM. User can select provider and model at runtime.
+- **Scan Profiles:** Built-in scan profiles selectable via `-p`. Profile **1** matches the legacy default scan behavior. Profiles are only applied if `--nmap-args` is not provided.
+- **Rich Output:** Exports to HTML, CSV, XML, TXT, or JSON (`-o`).
+- **Safe-by-default HTML:** AI HTML is escaped by default. Use `--trust-ai-html` to render raw AI HTML.
+- **HTML Formatting Fix:** Automatically strips Markdown code fences (``` / ```html) from AI output to avoid broken rendering in browsers. If the AI returns a full HTML document and `--trust-ai-html` is enabled, it is written directly (not nested).
 - **Risk Prioritization & Remediation:** AI provides severity, rationale, and actionable remediation for each finding.
-- **Debug Mode:** Use `-d` to see detailed debug logs and scan commands.
-- **Root Privilege Check:** Warns if root is required for selected scan profile.
-- **Interactive & Scriptable:** All options can be provided via command line or interactively.
+- **Debug Mode:** Use `-d` to see detailed debug logs and scan commands; use `-dl` to write debug logs to a file.
+- **Interactive & Scriptable:** All options can be provided via command line.
 
 ---
 
@@ -49,9 +49,11 @@
   ```
   OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
   
+  GEMINI_API_KEY=your_gemini_api_key
+  
   ANYTHINGLLM_API_KEY=your_anythingllm_api_key
   
-  ANYTHINGLLM_API_URL=http://localhost:3001/api/v1
+  ANYTHINGLLM_API_URL=http://localhost:3001
   
   ANTHROPIC_API_KEY=your_anthropic_api_key
   
@@ -61,7 +63,7 @@
   ```
 
 - Set only the providers you want to use.  
-- If multiple are set, you’ll be prompted to choose at runtime.
+- If multiple are set, you can select the provider via `--provider`.
 
 ---
 
@@ -75,22 +77,19 @@
 - `-t` Target IP or hostname (required)
 - `-o` Output format: html, csv, xml, txt, or json (default: html)
 - `-p` Scan profile number (see below)
+- `--provider` AI provider: openai, gemini, anthropic, replit, anythingllm
+- `--trust-ai-html` Render AI output as raw HTML (otherwise escaped)
 - `-d` Enable debug mode (verbose output)
+- `-dl` Enable debug log file output
 
 ### Example: Fast Scan with OpenAI
   ```
   python vulnscanner.py -t 192.168.1.1 -o html -p 1
   ```
 
-### Example: WAF Bypass Scan (requires root)
-
-  ```
-  sudo python vulnscanner.py -t example.com -o html -p 7
-  ```
-
 ### Example: Debug Mode
   ```
-  python vulnscanner.py -t 192.168.1.1 -o json -p 2 -d
+  python vulnscanner.py -t 192.168.1.1 -o json -p 2 -d -dl
   ```
 
 ### Example: Using Anthropic Claude
@@ -98,20 +97,30 @@
 Set your `ANTHROPIC_API_KEY` in `.env` and run:
 
   ```
-  python vulnscanner.py -t 192.168.1.1 -o html -p 2
+  python vulnscanner.py -t 192.168.1.1 -o html -p 2 --provider anthropic
   ```
-Select "Anthropic" when prompted for AI provider
 
+### Example: Using Gemini
+
+Set your `GEMINI_API_KEY` in `.env` and run:
+
+  ```
+  python vulnscanner.py -t 192.168.1.1 -o html -p 2 --provider gemini
+  ```
 
 ### Example: Using AnythingLLM
 
 Set `ANYTHINGLLM_API_KEY` and `ANYTHINGLLM_API_URL` in `.env` and run:
 
   ```
-  python vulnscanner.py -t 192.168.1.1 -o html -p 2
+  python vulnscanner.py -t 192.168.1.1 -o html -p 2 --provider anythingllm
   ```
 
-Select "AnythingLLM" and then select the desired model when prompted
+### Example: Trusted AI HTML Rendering
+
+  ```
+  python vulnscanner.py -t 192.168.1.1 -o html -p 1 --trust-ai-html
+  ```
 
 ---
 
@@ -119,41 +128,33 @@ Select "AnythingLLM" and then select the desired model when prompted
 
 You can select from the following scan profiles (shown in help and at runtime):
 
-1. Fast scan  
-2. Comprehensive scan  
-3. Stealth scan with UDP  
-4. Full port range scan  
-5. Stealth and UDP scan with version detection and OS detection  
-6. Vulnerability scan against all TCP and UDP ports  
-7. WAF bypass scan against all TCP ports (requires root)  
-8. Misconfigured firewall bypass (requires root)  
+1. Legacy fast scan (matches previous default `--nmap-args`)
+2. Full TCP scan with default scripts and version detection
+3. TCP + UDP top ports (balanced)
+4. Very fast scan (aggressive timing)
 
----
-
-## Asset Context & Threat Intelligence
-
-- You will be prompted to specify the asset type (e.g., "web server", "IoT device") and any current threat intelligence (e.g., "CVE-2025-1234 is being exploited").
-- If left blank, the script will auto-deduce/enrich this information based on scan results and common ports.
+> Note: Profiles are only used if you do **not** provide `--nmap-args`. If `--nmap-args` is specified, it overrides profiles.
 
 ---
 
 ## Output
 
 - Results are displayed in the terminal and saved to a timestamped file in your chosen format.
-- Each finding includes:  
+- Each finding includes (AI-dependent):  
   - Vulnerability description  
   - Affected endpoint  
   - Evidence  
   - Severity rating and rationale  
   - Remediation steps  
-  - References to OWASP ASVS, WSTG, CAPEC, and CWE (as clickable links)  
-  - Risk prioritization and exploitation status
+  - References to common security standards (OWASP/CWE/CAPEC)
 
 ---
 
 ## Debug Mode
 
 Add `-d` to any command to enable debug output.  
+Add `-dl` to also write to a log file.
+
 This will show:
 - The actual nmap command being run
 - All intermediate data (scan results, AI prompts, etc.)
@@ -165,11 +166,12 @@ This will show:
 
 The scanner supports:
 - **OpenAI (GPT-4o and compatible)**
+- **Gemini**
 - **AnythingLLM** (self-hosted, supports many models)
 - **Anthropic Claude**
 - **Replit AI**
 
-You can set up one or more providers in your `.env` file and select at runtime.
+You can set up one or more providers in your `.env` file and select at runtime via `--provider`.
 
 ---
 
@@ -189,3 +191,4 @@ By using the AI-Integrated Vulnerability Scanner, you acknowledge and accept the
 
 **Enjoy advanced, AI-powered vulnerability scanning!**  
 For questions, feature requests, or contributions, please open an issue or PR.
+
