@@ -396,36 +396,154 @@ def looks_like_full_html_document(text: str) -> bool:
 
 
 def wrap_ai_html(ai_html: str, trust_ai_html: bool) -> str:
-    """
-    Keeps your original safety model:
-    - By default: escape AI output and show as <pre>
-    - With --trust-ai-html: render raw HTML
-    Additionally:
-    - Strip Markdown fences
-    - If trusted and AI output is full HTML doc, return it as-is.
-    """
     ai_html = strip_markdown_fences(ai_html)
 
+    # If trusted and AI already produced a full HTML document, write as-is
     if trust_ai_html and looks_like_full_html_document(ai_html):
-        # Write full document as-is (no wrapper)
         return ai_html
 
+    # Safe by default: escape AI output
     body = ai_html if trust_ai_html else f"<pre>{escape(ai_html)}</pre>"
 
     tpl = Template("""
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <title>AI Vulnerability Report</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --fg: #1f2937;
+  --muted: #6b7280;
+  --border: #e5e7eb;
+  --critical: #7f1d1d;
+  --high: #b91c1c;
+  --medium: #f59e0b;
+  --low: #2563eb;
+}
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  margin: 0;
+  padding: 0;
+}
+
+header {
+  background: #111827;
+  color: #f9fafb;
+  padding: 24px 40px;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+header .meta {
+  font-size: 13px;
+  color: #9ca3af;
+}
+
+main {
+  max-width: 1200px;
+  margin: auto;
+  padding: 40px;
+}
+
+section {
+  margin-bottom: 48px;
+}
+
+h2 {
+  border-bottom: 2px solid var(--border);
+  padding-bottom: 6px;
+}
+
+.finding {
+  border: 1px solid var(--border);
+  border-left: 6px solid #9ca3af;
+  padding: 16px;
+  margin: 20px 0;
+  background: #f9fafb;
+  border-radius: 4px;
+}
+
+.finding.critical { border-left-color: var(--critical); }
+.finding.high     { border-left-color: var(--high); }
+.finding.medium   { border-left-color: var(--medium); }
+.finding.low      { border-left-color: var(--low); }
+
+.severity {
+  font-weight: bold;
+}
+
+.severity.critical { color: var(--critical); }
+.severity.high     { color: var(--high); }
+.severity.medium   { color: var(--medium); }
+.severity.low      { color: var(--low); }
+
+pre {
+  background: #f3f4f6;
+  padding: 12px;
+  overflow-x: auto;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+}
+
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px;
+  text-align: left;
+}
+
+th {
+  background: #f3f4f6;
+}
+
+footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 40px;
+}
+</style>
 </head>
+
 <body>
-<h1>AI Vulnerability Report</h1>
+
+<header>
+  <h1>AI Vulnerability Report</h1>
+  <div class="meta">
+    Generated {{ timestamp }} • AI-Vuln-Scanner • Authorized use only
+  </div>
+</header>
+
+<main>
 {{ body | safe }}
+</main>
+
+<footer>
+  This report was automatically generated.  
+  Always validate findings before production decisions.
+</footer>
+
 </body>
 </html>
 """)
-    return tpl.render(body=body)
+
+    return tpl.render(
+        body=body,
+        timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
+    )
 
 # ============================================================
 # AI PROVIDERS
