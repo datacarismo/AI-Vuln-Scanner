@@ -9,6 +9,9 @@
 # - Anthropic (Claude Messages API)
 # - Replit (OpenAI-compatible endpoint)
 # - AnythingLLM (workspace API; models + chat)
+# - Ollama (local inference; no API key required)
+# - Groq (OpenAI-compatible; fast cloud inference)
+# - DeepSeek (OpenAI-compatible; strong technical reasoning)
 #
 # Key design goals:
 # - Stable scanning: call the local `nmap` binary via subprocess (most reliable).
