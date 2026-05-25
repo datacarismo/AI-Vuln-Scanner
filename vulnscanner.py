@@ -78,6 +78,18 @@ ANYTHINGLLM_API_URL = os.getenv("ANYTHINGLLM_API_URL")
 ANYTHINGLLM_WORKSPACE = os.getenv("ANYTHINGLLM_WORKSPACE", "default")
 ANYTHINGLLM_MODEL = os.getenv("ANYTHINGLLM_MODEL")  # optional; AnythingLLM can pick default
 
+# Ollama — local inference, no API key required
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
+
+# Groq — fast cloud inference, OpenAI-compatible
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+# DeepSeek — strong technical/security reasoning, OpenAI-compatible
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
 # ============================================================
 # AI Defaults
 # ============================================================
@@ -196,6 +208,12 @@ def validate_api_keys(provider: str) -> None:
         key_present = bool(REPLIT_API_KEY)
     elif p in ("anythingllm", "anything"):
         key_present = bool(ANYTHINGLLM_API_KEY and ANYTHINGLLM_API_URL)
+    elif p == "ollama":
+        key_present = True  # Ollama is local — no key required
+    elif p == "groq":
+        key_present = bool(GROQ_API_KEY)
+    elif p == "deepseek":
+        key_present = bool(DEEPSEEK_API_KEY)
     else:
         # Unknown provider — let ask_provider() surface the error later
         key_present = True
@@ -214,6 +232,10 @@ def validate_api_keys(provider: str) -> None:
     logging.debug("Replit API Key      : %s", mask_api_key(REPLIT_API_KEY))
     logging.debug("AnythingLLM API Key : %s", mask_api_key(ANYTHINGLLM_API_KEY))
     logging.debug("AnythingLLM API URL : %s", ANYTHINGLLM_API_URL or "[NOT SET]")
+    logging.debug("Groq API Key        : %s", mask_api_key(GROQ_API_KEY))
+    logging.debug("DeepSeek API Key    : %s", mask_api_key(DEEPSEEK_API_KEY))
+    logging.debug("Ollama API URL      : %s", OLLAMA_API_URL)
+    logging.debug("Ollama Model        : %s", OLLAMA_MODEL)
 
 # ============================================================
 # Nmap scanning (subprocess + XML)
@@ -743,6 +765,89 @@ def ask_anythingllm(prompt: str, timeout: int = 60) -> str:
         return "<b>AnythingLLM API error.</b>"
 
 
+def ask_ollama(prompt: str, timeout: int = 60) -> str:
+    # Ollama runs locally — no API key required.
+    # Endpoint: POST /api/chat  (introduced in Ollama 0.1.14)
+    url = f"{OLLAMA_API_URL.rstrip('/')}/api/chat"
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a senior penetration tester and vulnerability analyst."},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "options": {"temperature": TEMPERATURE},
+    }
+
+    try:
+        r = HTTP_SESSION.post(url, json=payload, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        # Response: {"message": {"role": "assistant", "content": "..."}, ...}
+        return data.get("message", {}).get("content", "<b>Ollama returned empty content.</b>")
+    except Exception as e:
+        logging.error("Ollama API error: %s", e)
+        return "<b>Ollama API error. Is Ollama running? Try: ollama serve</b>"
+
+
+def ask_groq(prompt: str, timeout: int = 60) -> str:
+    if not GROQ_API_KEY:
+        return "<b>Groq API key not configured.</b>"
+
+    # Groq uses an OpenAI-compatible chat completions endpoint.
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a senior penetration tester and vulnerability analyst."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": TEMPERATURE,
+        "max_tokens": TOKEN_LIMIT,
+    }
+
+    try:
+        r = HTTP_SESSION.post(url, headers=headers, json=payload, timeout=timeout)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logging.error("Groq API error: %s", e)
+        return "<b>Groq API error.</b>"
+
+
+def ask_deepseek(prompt: str, timeout: int = 60) -> str:
+    if not DEEPSEEK_API_KEY:
+        return "<b>DeepSeek API key not configured.</b>"
+
+    # DeepSeek uses an OpenAI-compatible chat completions endpoint.
+    url = "https://api.deepseek.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a senior penetration tester and vulnerability analyst."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": TEMPERATURE,
+        "max_tokens": TOKEN_LIMIT,
+    }
+
+    try:
+        r = HTTP_SESSION.post(url, headers=headers, json=payload, timeout=timeout)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logging.error("DeepSeek API error: %s", e)
+        return "<b>DeepSeek API error.</b>"
+
+
 def ask_provider(provider: str, prompt: str, timeout: int = 60) -> str:
     p = (provider or "openai").strip().lower()
     if p == "openai":
@@ -755,6 +860,12 @@ def ask_provider(provider: str, prompt: str, timeout: int = 60) -> str:
         return ask_replit(prompt, timeout=timeout)
     if p in ("anythingllm", "anything"):
         return ask_anythingllm(prompt, timeout=timeout)
+    if p == "ollama":
+        return ask_ollama(prompt, timeout=timeout)
+    if p == "groq":
+        return ask_groq(prompt, timeout=timeout)
+    if p == "deepseek":
+        return ask_deepseek(prompt, timeout=timeout)
     return f"<b>Unknown provider: {escape(provider)}</b>"
 
 # ============================================================

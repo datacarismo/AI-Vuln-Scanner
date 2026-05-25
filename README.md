@@ -184,8 +184,43 @@ The scanner supports:
 - **AnythingLLM** (self-hosted, supports many models)
 - **Anthropic Claude**
 - **Replit AI**
+- **Groq** (fast cloud inference, free tier available)
+- **DeepSeek** (strong technical/security reasoning)
+- **Ollama** (fully local, no API key required)
 
 You can set up one or more providers in your `.env` file and select at runtime via `--provider`.
+
+### Example: Using Groq
+
+Set your `GROQ_API_KEY` in `.env` and run:
+
+  ```
+  python vulnscanner.py -t 192.168.1.1 -o html -p 1 --provider groq
+  ```
+
+> Default model: `llama-3.3-70b-versatile`. Override with `GROQ_MODEL` in `.env`.
+
+### Example: Using DeepSeek
+
+Set your `DEEPSEEK_API_KEY` in `.env` and run:
+
+  ```
+  python vulnscanner.py -t 192.168.1.1 -o html -p 1 --provider deepseek
+  ```
+
+> Default model: `deepseek-chat`. Use `deepseek-reasoner` for deeper analysis. Override with `DEEPSEEK_MODEL` in `.env`.
+
+### Example: Using Ollama (local, no API key)
+
+Start Ollama and pull a model, then run:
+
+  ```
+  ollama serve
+  ollama pull llama3
+  python vulnscanner.py -t 192.168.1.1 -o html -p 1 --provider ollama
+  ```
+
+> Default model: `llama3`. Override with `OLLAMA_MODEL` in `.env`. Change the server URL with `OLLAMA_API_URL` (default: `http://localhost:11434`).
 
 ---
 
