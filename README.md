@@ -79,6 +79,9 @@
 - `-p` Scan profile number (see below)
 - `--provider` AI provider: openai, gemini, anthropic, replit, anythingllm
 - `--trust-ai-html` Render AI output as raw HTML (otherwise escaped)
+- `--ai-timeout` Timeout in seconds for AI API calls (default: 60)
+- `--env-file` Path to .env file (default: .env)
+- `--list-profiles` Print available scan profiles and exit
 - `-d` Enable debug mode (verbose output)
 - `-dl` Enable debug log file output
 
@@ -108,6 +111,13 @@ Set your `GEMINI_API_KEY` in `.env` and run:
   python vulnscanner.py -t 192.168.1.1 -o html -p 2 --provider gemini
   ```
 
+> **Note:** The default Gemini model is `gemini-1.5-pro`. If you hit rate limits or deprecation
+> errors on the free tier, switch to a lighter model by adding this to your `.env`:
+> ```
+> GEMINI_MODEL=gemini-2.0-flash
+> ```
+> `gemini-2.0-flash` and `gemini-1.5-flash` are good lower-cost alternatives.
+
 ### Example: Using AnythingLLM
 
 Set `ANYTHINGLLM_API_KEY` and `ANYTHINGLLM_API_URL` in `.env` and run:
@@ -121,6 +131,10 @@ Set `ANYTHINGLLM_API_KEY` and `ANYTHINGLLM_API_URL` in `.env` and run:
   ```
   python vulnscanner.py -t 192.168.1.1 -o html -p 1 --trust-ai-html
   ```
+
+> ⚠️ **Security note:** `--trust-ai-html` renders AI output as raw HTML in the report.
+> Do **not** use this flag if the report will be served to other users or hosted on a web server,
+> as AI output is not sanitized and may contain unsafe content.
 
 ---
 

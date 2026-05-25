@@ -44,7 +44,12 @@ from jinja2 import Template
 # ============================================================
 # Environment
 # ============================================================
-load_dotenv()
+# Pre-parse --env-file before the full argparse so that module-level os.getenv()
+# calls (provider configs below) pick up values from a custom .env path.
+_pre_parser = argparse.ArgumentParser(add_help=False)
+_pre_parser.add_argument("--env-file", default=".env")
+_pre_args, _ = _pre_parser.parse_known_args()
+load_dotenv(_pre_args.env_file)
 
 # ============================================================
 # Logging base config
@@ -62,7 +67,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 
 REPLIT_API_KEY = os.getenv("REPLIT_API_KEY")
 REPLIT_API_URL = os.getenv("REPLIT_API_URL", "https://chat.replit.com/v1/chat/completions")
@@ -170,23 +175,38 @@ def ensure_nmap_available(nmap_path: Optional[str]) -> str:
     return resolved
 
 
-def validate_api_keys():
-    missing = []
-    if not OPENAI_API_KEY:
-        missing.append("OPENAI_API_KEY")
-    if not GEMINI_API_KEY:
-        missing.append("GEMINI_API_KEY")
-    if not ANTHROPIC_API_KEY:
-        missing.append("ANTHROPIC_API_KEY")
-    if not REPLIT_API_KEY:
-        missing.append("REPLIT_API_KEY")
-    if not (ANYTHINGLLM_API_KEY and ANYTHINGLLM_API_URL):
-        missing.append("ANYTHINGLLM_API_KEY/ANYTHINGLLM_API_URL")
+def validate_api_keys(provider: str) -> None:
+    """
+    Verifies that the API key (and any required config) for the *selected* provider
+    is present.  Exits immediately with a clear error if it is missing, rather than
+    letting the scan run to completion before failing.
 
-    logging.warning(
-        "Missing API keys/config: %s",
-        ", ".join(missing) if missing else "none"
-    )
+    Debug-level dumps of all masked keys are still emitted so that -d/-dl output
+    remains useful for troubleshooting multi-provider setups.
+    """
+    p = (provider or "openai").strip().lower()
+
+    if p == "openai":
+        key_present = bool(OPENAI_API_KEY)
+    elif p == "gemini":
+        key_present = bool(GEMINI_API_KEY)
+    elif p in ("anthropic", "claude"):
+        key_present = bool(ANTHROPIC_API_KEY)
+    elif p == "replit":
+        key_present = bool(REPLIT_API_KEY)
+    elif p in ("anythingllm", "anything"):
+        key_present = bool(ANYTHINGLLM_API_KEY and ANYTHINGLLM_API_URL)
+    else:
+        # Unknown provider — let ask_provider() surface the error later
+        key_present = True
+
+    if not key_present:
+        logging.error(
+            "Required API key/config for provider '%s' is not set. "
+            "Add it to your .env file and try again.",
+            provider,
+        )
+        sys.exit(1)
 
     logging.debug("OpenAI API Key      : %s", mask_api_key(OPENAI_API_KEY))
     logging.debug("Gemini API Key      : %s", mask_api_key(GEMINI_API_KEY))
@@ -334,8 +354,11 @@ def extract_open_ports(scan: Dict[str, Any]) -> str:
 # ============================================================
 # AI PROMPT
 # ============================================================
-def build_ai_prompt(scan: Dict[str, Any], open_ports: str, target: str) -> str:
-    scan_json = json.dumps(scan, indent=2).replace("```", "'''")
+def build_ai_prompt(scan: Dict[str, Any], open_ports: str, target: str,
+                    *, _scan_json: Optional[str] = None) -> str:
+    # Accept a pre-serialized (and possibly pre-truncated) JSON string so callers
+    # can truncate at the structured level rather than blindly slicing the prompt.
+    scan_json = (_scan_json if _scan_json is not None else json.dumps(scan, indent=2)).replace("```", "'''")
     prompt = f"""
 You are a senior penetration tester and vulnerability analyst.
 
@@ -876,10 +899,12 @@ def build_output_filename(target: str, output_format: str) -> str:
 
 def main():
     print_ethical_warning()
-    validate_api_keys()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-t", "--target", required=True)
+    parser.add_argument("-t", "--target", default=None,
+                        help="Target IP or hostname (required unless --list-profiles)")
+    parser.add_argument("--env-file", default=".env",
+                        help="Path to .env file (default: .env)")
     parser.add_argument("--nmap-path", default=None)
 
     # Preserve previous default behavior, but allow detecting if user provided it:
@@ -888,6 +913,8 @@ def main():
     parser.add_argument("--nmap-args", default=argparse.SUPPRESS)
 
     parser.add_argument("--provider", default="openai")
+    parser.add_argument("--ai-timeout", type=int, default=60,
+                        help="Timeout in seconds for AI API calls (default: 60)")
     parser.add_argument("--trust-ai-html", action="store_true")
     parser.add_argument("-d", "--debug", action="store_true")
     parser.add_argument("-dl", "--debug-log", nargs="?", const="vulnscanner-debug.log")
@@ -906,9 +933,25 @@ def main():
         help=f"Scan profile number (available: {sorted(SCAN_PROFILES.keys())}). "
              f"Used only if --nmap-args is not provided. Profile 1 matches legacy default."
     )
+    parser.add_argument(
+        "--list-profiles",
+        action="store_true",
+        help="Print available scan profiles and exit",
+    )
 
     args = parser.parse_args()
     setup_debug_logging(args.debug, args.debug_log)
+
+    if args.list_profiles:
+        print("Available scan profiles:")
+        for num, profile_args in sorted(SCAN_PROFILES.items()):
+            print(f"  Profile {num}: {profile_args}")
+        sys.exit(0)
+
+    if not args.target:
+        parser.error("the following arguments are required: -t/--target")
+
+    validate_api_keys(args.provider)
 
     target = sanitize_target(args.target)
     if not is_safe_target(target):
@@ -939,14 +982,21 @@ def main():
     open_ports = extract_open_ports(scan)
     logging.info("Open ports: %s", open_ports)
 
-    prompt = build_ai_prompt(scan, open_ports, target)
-    MAX_PROMPT = 120000
-    if len(prompt) > MAX_PROMPT:
-        logging.warning("Prompt too large, truncating.")
-        prompt = prompt[:MAX_PROMPT]
+    # Truncate the scan JSON *before* embedding it in the prompt so the structure
+    # is never cut mid-object, which would degrade AI output quality.
+    MAX_SCAN_JSON_CHARS = 100_000
+    scan_json_str = json.dumps(scan, indent=2)
+    if len(scan_json_str) > MAX_SCAN_JSON_CHARS:
+        logging.warning(
+            "Scan JSON too large (%d chars), truncating to %d chars.",
+            len(scan_json_str), MAX_SCAN_JSON_CHARS,
+        )
+        scan_json_str = scan_json_str[:MAX_SCAN_JSON_CHARS] + "\n... [truncated]"
+
+    prompt = build_ai_prompt(scan, open_ports, target, _scan_json=scan_json_str)
 
     provider = args.provider
-    ai_output = ask_provider(provider, prompt)
+    ai_output = ask_provider(provider, prompt, timeout=args.ai_timeout)
     if not ai_output:
         logging.error("AI returned empty output.")
         sys.exit(3)
