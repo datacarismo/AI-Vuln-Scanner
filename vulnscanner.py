@@ -443,12 +443,30 @@ def looks_like_full_html_document(text: str) -> bool:
     return False
 
 
+def strip_preamble(text: str) -> str:
+    """
+    Remove any model-generated noise (tokens, tags, stray text) that appears
+    before the actual HTML document.  Looks for the first occurrence of
+    '<!doctype' or '<html' (case-insensitive) and discards everything before it.
+    """
+    lower = text.lower()
+    for marker in ("<!doctype", "<html"):
+        idx = lower.find(marker)
+        if idx > 0:
+            discarded = text[:idx].strip()
+            if discarded:
+                logging.debug("Stripped preamble before HTML document: %r", discarded)
+            return text[idx:]
+    return text
+
+
 def wrap_ai_html(ai_html: str, trust_ai_html: bool) -> str:
     ai_html = strip_markdown_fences(ai_html)
 
     # If trusted and AI already produced a full HTML document, write as-is
+    # (after removing any stray model artifacts that precede the doctype)
     if trust_ai_html and looks_like_full_html_document(ai_html):
-        return ai_html
+        return strip_preamble(ai_html)
 
     # Safe by default: escape AI output
     body = ai_html if trust_ai_html else f"<pre>{escape(ai_html)}</pre>"
