@@ -9,6 +9,9 @@
 # - Anthropic (Claude Messages API)
 # - Replit (OpenAI-compatible endpoint)
 # - AnythingLLM (workspace API; models + chat)
+# - Ollama (local inference; no API key required)
+# - Groq (OpenAI-compatible; fast cloud inference)
+# - DeepSeek (OpenAI-compatible; strong technical reasoning)
 #
 # Key design goals:
 # - Stable scanning: call the local `nmap` binary via subprocess (most reliable).
@@ -44,7 +47,12 @@ from jinja2 import Template
 # ============================================================
 # Environment
 # ============================================================
-load_dotenv()
+# Pre-parse --env-file before the full argparse so that module-level os.getenv()
+# calls (provider configs below) pick up values from a custom .env path.
+_pre_parser = argparse.ArgumentParser(add_help=False)
+_pre_parser.add_argument("--env-file", default=".env")
+_pre_args, _ = _pre_parser.parse_known_args()
+load_dotenv(_pre_args.env_file)
 
 # ============================================================
 # Logging base config
@@ -62,7 +70,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 
 REPLIT_API_KEY = os.getenv("REPLIT_API_KEY")
 REPLIT_API_URL = os.getenv("REPLIT_API_URL", "https://chat.replit.com/v1/chat/completions")
@@ -72,6 +80,18 @@ ANYTHINGLLM_API_KEY = os.getenv("ANYTHINGLLM_API_KEY")
 ANYTHINGLLM_API_URL = os.getenv("ANYTHINGLLM_API_URL")
 ANYTHINGLLM_WORKSPACE = os.getenv("ANYTHINGLLM_WORKSPACE", "default")
 ANYTHINGLLM_MODEL = os.getenv("ANYTHINGLLM_MODEL")  # optional; AnythingLLM can pick default
+
+# Ollama — local inference, no API key required
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
+
+# Groq — fast cloud inference, OpenAI-compatible
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+# DeepSeek — strong technical/security reasoning, OpenAI-compatible
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
 # ============================================================
 # AI Defaults
@@ -170,23 +190,44 @@ def ensure_nmap_available(nmap_path: Optional[str]) -> str:
     return resolved
 
 
-def validate_api_keys():
-    missing = []
-    if not OPENAI_API_KEY:
-        missing.append("OPENAI_API_KEY")
-    if not GEMINI_API_KEY:
-        missing.append("GEMINI_API_KEY")
-    if not ANTHROPIC_API_KEY:
-        missing.append("ANTHROPIC_API_KEY")
-    if not REPLIT_API_KEY:
-        missing.append("REPLIT_API_KEY")
-    if not (ANYTHINGLLM_API_KEY and ANYTHINGLLM_API_URL):
-        missing.append("ANYTHINGLLM_API_KEY/ANYTHINGLLM_API_URL")
+def validate_api_keys(provider: str) -> None:
+    """
+    Verifies that the API key (and any required config) for the *selected* provider
+    is present.  Exits immediately with a clear error if it is missing, rather than
+    letting the scan run to completion before failing.
 
-    logging.warning(
-        "Missing API keys/config: %s",
-        ", ".join(missing) if missing else "none"
-    )
+    Debug-level dumps of all masked keys are still emitted so that -d/-dl output
+    remains useful for troubleshooting multi-provider setups.
+    """
+    p = (provider or "openai").strip().lower()
+
+    if p == "openai":
+        key_present = bool(OPENAI_API_KEY)
+    elif p == "gemini":
+        key_present = bool(GEMINI_API_KEY)
+    elif p in ("anthropic", "claude"):
+        key_present = bool(ANTHROPIC_API_KEY)
+    elif p == "replit":
+        key_present = bool(REPLIT_API_KEY)
+    elif p in ("anythingllm", "anything"):
+        key_present = bool(ANYTHINGLLM_API_KEY and ANYTHINGLLM_API_URL)
+    elif p == "ollama":
+        key_present = True  # Ollama is local — no key required
+    elif p == "groq":
+        key_present = bool(GROQ_API_KEY)
+    elif p == "deepseek":
+        key_present = bool(DEEPSEEK_API_KEY)
+    else:
+        # Unknown provider — let ask_provider() surface the error later
+        key_present = True
+
+    if not key_present:
+        logging.error(
+            "Required API key/config for provider '%s' is not set. "
+            "Add it to your .env file and try again.",
+            provider,
+        )
+        sys.exit(1)
 
     logging.debug("OpenAI API Key      : %s", mask_api_key(OPENAI_API_KEY))
     logging.debug("Gemini API Key      : %s", mask_api_key(GEMINI_API_KEY))
@@ -194,6 +235,10 @@ def validate_api_keys():
     logging.debug("Replit API Key      : %s", mask_api_key(REPLIT_API_KEY))
     logging.debug("AnythingLLM API Key : %s", mask_api_key(ANYTHINGLLM_API_KEY))
     logging.debug("AnythingLLM API URL : %s", ANYTHINGLLM_API_URL or "[NOT SET]")
+    logging.debug("Groq API Key        : %s", mask_api_key(GROQ_API_KEY))
+    logging.debug("DeepSeek API Key    : %s", mask_api_key(DEEPSEEK_API_KEY))
+    logging.debug("Ollama API URL      : %s", OLLAMA_API_URL)
+    logging.debug("Ollama Model        : %s", OLLAMA_MODEL)
 
 # ============================================================
 # Nmap scanning (subprocess + XML)
@@ -334,8 +379,11 @@ def extract_open_ports(scan: Dict[str, Any]) -> str:
 # ============================================================
 # AI PROMPT
 # ============================================================
-def build_ai_prompt(scan: Dict[str, Any], open_ports: str, target: str) -> str:
-    scan_json = json.dumps(scan, indent=2).replace("```", "'''")
+def build_ai_prompt(scan: Dict[str, Any], open_ports: str, target: str,
+                    *, _scan_json: Optional[str] = None) -> str:
+    # Accept a pre-serialized (and possibly pre-truncated) JSON string so callers
+    # can truncate at the structured level rather than blindly slicing the prompt.
+    scan_json = (_scan_json if _scan_json is not None else json.dumps(scan, indent=2)).replace("```", "'''")
     prompt = f"""
 You are a senior penetration tester and vulnerability analyst.
 
@@ -395,12 +443,30 @@ def looks_like_full_html_document(text: str) -> bool:
     return False
 
 
+def strip_preamble(text: str) -> str:
+    """
+    Remove any model-generated noise (tokens, tags, stray text) that appears
+    before the actual HTML document.  Looks for the first occurrence of
+    '<!doctype' or '<html' (case-insensitive) and discards everything before it.
+    """
+    lower = text.lower()
+    for marker in ("<!doctype", "<html"):
+        idx = lower.find(marker)
+        if idx > 0:
+            discarded = text[:idx].strip()
+            if discarded:
+                logging.debug("Stripped preamble before HTML document: %r", discarded)
+            return text[idx:]
+    return text
+
+
 def wrap_ai_html(ai_html: str, trust_ai_html: bool) -> str:
     ai_html = strip_markdown_fences(ai_html)
 
     # If trusted and AI already produced a full HTML document, write as-is
+    # (after removing any stray model artifacts that precede the doctype)
     if trust_ai_html and looks_like_full_html_document(ai_html):
-        return ai_html
+        return strip_preamble(ai_html)
 
     # Safe by default: escape AI output
     body = ai_html if trust_ai_html else f"<pre>{escape(ai_html)}</pre>"
@@ -720,6 +786,89 @@ def ask_anythingllm(prompt: str, timeout: int = 60) -> str:
         return "<b>AnythingLLM API error.</b>"
 
 
+def ask_ollama(prompt: str, timeout: int = 60) -> str:
+    # Ollama runs locally — no API key required.
+    # Endpoint: POST /api/chat  (introduced in Ollama 0.1.14)
+    url = f"{OLLAMA_API_URL.rstrip('/')}/api/chat"
+    payload = {
+        "model": OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a senior penetration tester and vulnerability analyst."},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "options": {"temperature": TEMPERATURE},
+    }
+
+    try:
+        r = HTTP_SESSION.post(url, json=payload, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        # Response: {"message": {"role": "assistant", "content": "..."}, ...}
+        return data.get("message", {}).get("content", "<b>Ollama returned empty content.</b>")
+    except Exception as e:
+        logging.error("Ollama API error: %s", e)
+        return "<b>Ollama API error. Is Ollama running? Try: ollama serve</b>"
+
+
+def ask_groq(prompt: str, timeout: int = 60) -> str:
+    if not GROQ_API_KEY:
+        return "<b>Groq API key not configured.</b>"
+
+    # Groq uses an OpenAI-compatible chat completions endpoint.
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a senior penetration tester and vulnerability analyst."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": TEMPERATURE,
+        "max_tokens": TOKEN_LIMIT,
+    }
+
+    try:
+        r = HTTP_SESSION.post(url, headers=headers, json=payload, timeout=timeout)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logging.error("Groq API error: %s", e)
+        return "<b>Groq API error.</b>"
+
+
+def ask_deepseek(prompt: str, timeout: int = 60) -> str:
+    if not DEEPSEEK_API_KEY:
+        return "<b>DeepSeek API key not configured.</b>"
+
+    # DeepSeek uses an OpenAI-compatible chat completions endpoint.
+    url = "https://api.deepseek.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a senior penetration tester and vulnerability analyst."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": TEMPERATURE,
+        "max_tokens": TOKEN_LIMIT,
+    }
+
+    try:
+        r = HTTP_SESSION.post(url, headers=headers, json=payload, timeout=timeout)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logging.error("DeepSeek API error: %s", e)
+        return "<b>DeepSeek API error.</b>"
+
+
 def ask_provider(provider: str, prompt: str, timeout: int = 60) -> str:
     p = (provider or "openai").strip().lower()
     if p == "openai":
@@ -732,6 +881,12 @@ def ask_provider(provider: str, prompt: str, timeout: int = 60) -> str:
         return ask_replit(prompt, timeout=timeout)
     if p in ("anythingllm", "anything"):
         return ask_anythingllm(prompt, timeout=timeout)
+    if p == "ollama":
+        return ask_ollama(prompt, timeout=timeout)
+    if p == "groq":
+        return ask_groq(prompt, timeout=timeout)
+    if p == "deepseek":
+        return ask_deepseek(prompt, timeout=timeout)
     return f"<b>Unknown provider: {escape(provider)}</b>"
 
 # ============================================================
@@ -876,10 +1031,12 @@ def build_output_filename(target: str, output_format: str) -> str:
 
 def main():
     print_ethical_warning()
-    validate_api_keys()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-t", "--target", required=True)
+    parser.add_argument("-t", "--target", default=None,
+                        help="Target IP or hostname (required unless --list-profiles)")
+    parser.add_argument("--env-file", default=".env",
+                        help="Path to .env file (default: .env)")
     parser.add_argument("--nmap-path", default=None)
 
     # Preserve previous default behavior, but allow detecting if user provided it:
@@ -888,6 +1045,8 @@ def main():
     parser.add_argument("--nmap-args", default=argparse.SUPPRESS)
 
     parser.add_argument("--provider", default="openai")
+    parser.add_argument("--ai-timeout", type=int, default=60,
+                        help="Timeout in seconds for AI API calls (default: 60)")
     parser.add_argument("--trust-ai-html", action="store_true")
     parser.add_argument("-d", "--debug", action="store_true")
     parser.add_argument("-dl", "--debug-log", nargs="?", const="vulnscanner-debug.log")
@@ -906,9 +1065,25 @@ def main():
         help=f"Scan profile number (available: {sorted(SCAN_PROFILES.keys())}). "
              f"Used only if --nmap-args is not provided. Profile 1 matches legacy default."
     )
+    parser.add_argument(
+        "--list-profiles",
+        action="store_true",
+        help="Print available scan profiles and exit",
+    )
 
     args = parser.parse_args()
     setup_debug_logging(args.debug, args.debug_log)
+
+    if args.list_profiles:
+        print("Available scan profiles:")
+        for num, profile_args in sorted(SCAN_PROFILES.items()):
+            print(f"  Profile {num}: {profile_args}")
+        sys.exit(0)
+
+    if not args.target:
+        parser.error("the following arguments are required: -t/--target")
+
+    validate_api_keys(args.provider)
 
     target = sanitize_target(args.target)
     if not is_safe_target(target):
@@ -939,14 +1114,21 @@ def main():
     open_ports = extract_open_ports(scan)
     logging.info("Open ports: %s", open_ports)
 
-    prompt = build_ai_prompt(scan, open_ports, target)
-    MAX_PROMPT = 120000
-    if len(prompt) > MAX_PROMPT:
-        logging.warning("Prompt too large, truncating.")
-        prompt = prompt[:MAX_PROMPT]
+    # Truncate the scan JSON *before* embedding it in the prompt so the structure
+    # is never cut mid-object, which would degrade AI output quality.
+    MAX_SCAN_JSON_CHARS = 100_000
+    scan_json_str = json.dumps(scan, indent=2)
+    if len(scan_json_str) > MAX_SCAN_JSON_CHARS:
+        logging.warning(
+            "Scan JSON too large (%d chars), truncating to %d chars.",
+            len(scan_json_str), MAX_SCAN_JSON_CHARS,
+        )
+        scan_json_str = scan_json_str[:MAX_SCAN_JSON_CHARS] + "\n... [truncated]"
+
+    prompt = build_ai_prompt(scan, open_ports, target, _scan_json=scan_json_str)
 
     provider = args.provider
-    ai_output = ask_provider(provider, prompt)
+    ai_output = ask_provider(provider, prompt, timeout=args.ai_timeout)
     if not ai_output:
         logging.error("AI returned empty output.")
         sys.exit(3)
